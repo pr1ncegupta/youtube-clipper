@@ -20,6 +20,9 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir);
 }
 
+// Health check endpoint
+app.get("/", (req, res) => res.send("Server is alive!"));
+
 // Video clipping endpoint using only yt-dlp
 app.post("/api/clip", async (req, res) => {
   const timestamp = Date.now();
@@ -41,7 +44,10 @@ app.post("/api/clip", async (req, res) => {
     // Format the download section string for yt-dlp
     const section = `*${startTime}-${endTime}`;
     
+    // Get absolute path to cookies file
     const cookiesFilePath = path.join(__dirname, "../src/cookies.txt");
+    
+    // Build yt-dlp arguments
     const ytDlpArgs = [
       url,
       "-f", 
@@ -55,16 +61,31 @@ app.post("/api/clip", async (req, res) => {
       "--add-header", 
       "referer:youtube.com",
       "--add-header", 
-      "user-agent:Mozilla/5.0",
+      "user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       "--merge-output-format", 
       "mp4",
-      "--verbose"
+      "--verbose",
+      "--no-playlist",
+      "--extractor-retries", "3",
+      "--ignore-errors",
+      "--no-check-certificate",
+      "--geo-bypass",
     ];
 
     // Add cookies argument if cookies.txt exists
     if (fs.existsSync(cookiesFilePath)) {
       console.log(`Using cookies from: ${cookiesFilePath}`);
-      ytDlpArgs.push("--cookies", cookiesFilePath);
+      // Verify cookies file is readable
+      try {
+        const cookiesContent = fs.readFileSync(cookiesFilePath, 'utf8');
+        console.log(`Cookies file loaded successfully. Size: ${cookiesContent.length} bytes`);
+        if (cookiesContent.length < 10) {
+          console.warn("Warning: Cookies file seems too small and may be invalid");
+        }
+        ytDlpArgs.push("--cookies", cookiesFilePath);
+      } catch (cookieErr: unknown) {
+        console.error(`Error reading cookies file: ${cookieErr instanceof Error ? cookieErr.message : String(cookieErr)}`);
+      }
     } else {
       console.warn(`Cookies file not found at ${cookiesFilePath}. Proceeding without cookies.`);
     }
@@ -77,7 +98,7 @@ app.post("/api/clip", async (req, res) => {
       console.error(`yt-dlp stderr: ${data}`);
       processStderr += data.toString();
     });
-    
+
     let processStdout = "";
     ytDlp.stdout.on("data", (data) => {
       const output = data.toString();
@@ -97,7 +118,14 @@ app.post("/api/clip", async (req, res) => {
           }
         } else {
           console.error(`yt-dlp process exited with code ${code}. Stderr: ${processStderr}`);
-          reject(new Error(`yt-dlp failed with code ${code}. Stderr: ${processStderr}`));
+          
+          // Check if the error is related to bot detection or cookies
+          if (processStderr.includes("Sign in to confirm you're not a bot") || 
+              processStderr.includes("cookies")) {
+            reject(new Error("YouTube bot detection triggered. The cookies file may be expired or invalid."));
+          } else {
+            reject(new Error(`yt-dlp failed with code ${code}. Stderr: ${processStderr}`));
+          }
         }
       });
 
@@ -157,8 +185,6 @@ app.post("/api/clip", async (req, res) => {
     });
   }
 });
-
-app.get("/", (req, res) => res.send("Server is alive!"));
 
 // Start the server
 app.listen(port, () => {
